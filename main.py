@@ -2,6 +2,7 @@ import os
 import numpy as np
 import scipy.io
 from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report, accuracy_score
 import matplotlib.pyplot as plt
@@ -13,32 +14,48 @@ def get_true_label(filename):
     return int(filename.split('_')[1])
 
 # 主程序参数
-folder = r'D:\matrixlab\match_tar\test6s'  # 修改为你的信号路径
+folder = r'D:\matrixlab\match_tar\test22TPLB'  # 修改为你的信号路径
 Fs = 1e7  # 采样率
+save_path = "test3w.npz"  # 保存标准化特征文件名
 
-features_list = []
-file_list = []
+if os.path.exists(save_path):
+    print("检测到已保存特征，直接加载...")
+    data = np.load(save_path, allow_pickle=True)
+    X_scaled = data["X_scaled"]
+    file_list = data["file_list"].tolist()
+else:
+    print("未检测到保存文件，开始提取特征...")
+    features_list = []
+    file_list = []
 
-# 提取特征
-for file in tqdm(os.listdir(folder)):
-    if file.endswith('.mat'):
-        path = os.path.join(folder, file)
-        data = scipy.io.loadmat(path)
-        if 'baseband_signal' in data:
-            signal = data['baseband_signal']
-            if signal.ndim > 1:
-                signal = signal.flatten()
-            feature_vector = extract_feature(signal[np.newaxis, :], Fs)[0]  # 单条信号，提取一行
-            features_list.append(feature_vector)
-            file_list.append(file)
 
-# 特征标准化
-X = np.array(features_list)
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
+    for file in tqdm(os.listdir(folder)):
+        if file.endswith('.mat'):
+            path = os.path.join(folder, file)
+            data = scipy.io.loadmat(path)
+            if 'baseband_signal' in data:
+                signal = data['baseband_signal']
+                if signal.ndim > 1:
+                    signal = signal.flatten()
+                feature_vector = extract_feature(signal[np.newaxis, :], Fs)[0]
+                features_list.append(feature_vector)
+                file_list.append(file)
+
+    X = np.array(features_list)
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+# # 保存标准化特征和文件名列表
+np.savez(save_path, X_scaled=X_scaled, file_list=file_list)
+print(f"特征提取完毕，保存至 {save_path}")
+
+for i in range(len(file_list)):
+    print(file_list[i])
+    print(X_scaled[i])
+
 
 # KMeans聚类
-kmeans = KMeans(n_clusters=2, random_state=0)
+kmeans = KMeans(n_clusters=2, random_state=3)
 labels = kmeans.fit_predict(X_scaled)
 
 # 输出聚类结果
@@ -52,6 +69,25 @@ acc1 = accuracy_score(y_true, labels)
 acc2 = accuracy_score(y_true, 1 - labels)
 if acc2 > acc1:
     labels = 1 - labels  # 标签对齐
+
+# 根据真实标签绘制散点图
+pca = PCA(n_components=2)
+X_pca = pca.fit_transform(X_scaled)
+plt.figure(figsize=(8,6))
+palette = sns.color_palette("bright", 2)
+
+for label in np.unique(y_true):
+    idx = np.array(y_true) == label
+    plt.scatter(X_pca[idx, 0], X_pca[idx, 1],
+                label=f'True Class {label}', alpha=0.7, s=50, c=[palette[label]])
+
+plt.xlabel("PCA Component 1")
+plt.ylabel("PCA Component 2")
+plt.title(" PCA ")
+plt.legend()
+plt.grid(True)
+plt.show()
+
 
 # 混淆矩阵
 cm = confusion_matrix(y_true, labels)
