@@ -150,20 +150,27 @@ def extract_feature(original_signal_matrix, fs, task_index_Fea_Ext_Cal=None, que
         P_u, P_o, P_y, P_k, P_x,
         P_U, P_O, P_Y, P_K, P_X,
     ])
-    # # 输出特征矩阵（共13维）
+    # # 输出特征矩阵（共8维）
     # feature_matrix = np.column_stack([
-    #     np.abs(SNRE),Db, Di,
-    #     P_u, P_o, P_y, P_k, P_x,
-    #     P_U, P_O, P_Y, P_K, P_X,
+    #     LZC_y, Db, Di, R_HT, J_HT, P_u, P_o, P_U
     # ])
-    # 输出特征矩阵（共8维）
-    feature_matrix = np.column_stack([
-        LZC_y, Db, Di,
-    ])
+    # 输出特征矩阵（共3维）
+    # feature_matrix = np.column_stack([
+    #     LZC_y, Db, Di,
+    # ])
+    # feature_matrix = np.column_stack([
+    #       # 非线性 / 相位类
+    #     Db,  # 分形 / 滤波
+    #     Di,  # 信息复杂度
+    #     R_HT,  # 包络高阶
+    #     J_HT,
+    # ])
+
+    feature = np.abs(feature_matrix)
 
     logging.info(f"特征提取完成，形状为：{feature_matrix.shape}")
 
     if queue_Fea_Ext_Cal_progress is not None:
         queue_Fea_Ext_Cal_progress.put(("消息类型：特征提取计算进度条 — 任务结束", task_index_Fea_Ext_Cal, None))
 
-    return feature_matrix
+    return feature
