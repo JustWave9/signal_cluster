@@ -1,15 +1,182 @@
 import numpy as np
 from scipy.fftpack import fft, ifft, fftshift
-from scipy.signal import hilbert, firwin, lfilter, boxcar
+from scipy.signal import hilbert, firwin, lfilter, boxcar, welch, detrend
+from typing import Optional, Tuple, Dict
 from tqdm import tqdm
 from sklearn.preprocessing import normalize
 
 import logging
 
 
-def ex_feature(original_signal_matrix, Fc, task_index_Fea_Ext_Cal=None, queue_Fea_Ext_Cal_progress=None):
+def _median_positive(x: np.ndarray) -> float:
+    """Median of positive values; fallback to median of all; 0 if empty."""
+    x = np.asarray(x)
+    xp = x[x > 0]
+    if xp.size > 0:
+        return float(np.median(xp))
+    return float(np.median(x)) if x.size > 0 else 0.0
+
+
+def phase_increment_series_no_ref(
+        y: np.ndarray,
+        amp_thr_ratio: float = 0.08,
+        min_valid_ratio: float = 0.20,
+        unwrap: bool = True,
+) -> np.ndarray:
+    """
+    无参考：提取相位增量序列
+        Δφ[n] = angle( y[n] * conj(y[n-1]) )
+    - 幅度门限屏蔽 GI=0 / 弱信号点
+    - 只保留相邻点都有效的位置
+    返回 dphi (rad)，若有效点不足则返回空数组。
+    """
+    y = np.asarray(y)
+    if y.ndim != 1:
+        raise ValueError("y must be a 1-D complex array")
+    if y.size < 3:
+        return np.array([], dtype=float)
+
+    amp = np.abs(y)
+    med = _median_positive(amp)
+    if med <= 0:
+        return np.array([], dtype=float)
+
+    thr = amp_thr_ratio * med
+    valid = amp > thr
+
+    # 相邻点都有效才算
+    v = valid[1:] & valid[:-1]
+    if float(np.mean(v)) < min_valid_ratio:
+        return np.array([], dtype=float)
+
+    z = y[1:][v] * np.conj(y[:-1][v])
+
+    # 避免 angle(接近0) 抖动
+    z_amp = np.abs(z)
+    z_med = _median_positive(z_amp)
+    z_thr = 1e-12 + 0.05 * z_med
+    z = z[z_amp > z_thr]
+    if z.size < 32:
+        return np.array([], dtype=float)
+
+    dphi = np.angle(z)  # (-pi, pi]
+    if unwrap:
+        dphi = np.unwrap(dphi)
+    return dphi
+
+
+def phase_noise_psd_no_ref(
+        y: np.ndarray,
+        fs: float = 1e7,
+        nperseg: int = 2048,
+        noverlap: Optional[int] = None,
+        amp_thr_ratio: float = 0.08,
+        detrend_linear: bool = False,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    无参考近似相位噪声 PSD（对 Δφ 序列）：
+    - 提取 dphi
+    - 去均值（去 CFO 的主要项）
+    - 可选去线性趋势
+    - Welch 得到 Sdphi(f) [rad^2/Hz]
+    返回 (f, Sdphi, dphi_used)；失败返回 (None, None, None)
+    """
+    if fs <= 0:
+        raise ValueError("fs must be positive")
+
+    dphi = phase_increment_series_no_ref(y, amp_thr_ratio=amp_thr_ratio)
+    if dphi.size < 128:
+        return None, None, None
+
+    # 去平均频偏（CFO）
+    dphi = dphi - np.mean(dphi)
+
+    if detrend_linear:
+        dphi = detrend(dphi, type="linear")
+
+    nperseg_eff = int(min(nperseg, dphi.size))
+    if nperseg_eff < 128:
+        return None, None, None
+
+    if noverlap is None:
+        noverlap_eff = nperseg_eff // 2
+    else:
+        noverlap_eff = int(min(noverlap, nperseg_eff - 1))
+
+    f, Sdphi = welch(
+        dphi,
+        fs=fs,
+        window="hann",
+        nperseg=nperseg_eff,
+        noverlap=noverlap_eff,
+        detrend=False,
+        scaling="density",
+        return_onesided=True,
+    )
+    return f, Sdphi, dphi
+
+
+def _bandpower(f: np.ndarray, S: np.ndarray, f1: float, f2: float) -> float:
+    """∫ S(f) df over [f1,f2] using trapz. Returns NaN if band not available."""
+    if f is None or S is None:
+        return float("nan")
+    if f1 >= f2:
+        return float("nan")
+    mask = (f >= f1) & (f <= f2)
+    if not np.any(mask):
+        return float("nan")
+    return float(np.trapz(S[mask], f[mask]))
+
+
+def phase_noise_features_no_ref(
+        y: np.ndarray,
+        fs: float = 1e7,
+        nperseg: int = 2048,
+        amp_thr_ratio: float = 0.08,
+        detrend_linear: bool = False,
+        # len_=10000 => 1 ms => Δf ~ 1kHz，故建议使用 kHz~MHz 频段
+        bands_hz: Tuple[Tuple[float, float], ...] = ((5e3, 5e4), (5e4, 5e5), (5e5, 2e6)),
+        return_spectrum: bool = False,
+) -> Dict[str, float]:
+    """
+    输出适合聚类的无参考相位噪声特征：
+    - dphi_rms (rad)
+    - band_* (rad^2) : 各频段积分
+    - total_band (rad^2) : 从 f[1] 到 Nyquist 的积分（避开 f=0）
+    可选返回谱 f, Sdphi（return_spectrum=True）
+    """
+    f, Sdphi, dphi = phase_noise_psd_no_ref(
+        y, fs=fs, nperseg=nperseg, amp_thr_ratio=amp_thr_ratio,
+        detrend_linear=detrend_linear
+    )
+
+    if dphi is None or dphi.size == 0:
+        dphi_rms = float("nan")
+    else:
+        dphi_rms = float(np.sqrt(np.mean(dphi ** 2)))
+
+    out: Dict[str, float] = {"dphi_rms": dphi_rms}
+
+    for (a, b) in bands_hz:
+        key = "band_{}_{}".format(int(a), int(b))
+        out[key] = _bandpower(f, Sdphi, a, b)
+
+    if f is not None and Sdphi is not None and f.size >= 2:
+        out["total_band"] = float(np.trapz(Sdphi[1:], f[1:]))
+    else:
+        out["total_band"] = float("nan")
+
+    if return_spectrum:
+        # 这两个键给你画图/调试用
+        out["__f_len__"] = float(0 if f is None else len(f))
+        out["__Sdphi_mean__"] = float("nan" if Sdphi is None else np.mean(Sdphi))
+
+    return out
+
+def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fea_Ext_Cal_progress=None):
     # # 调试此计算脚本时，用来打印变量的详细值的，平时不用管
     # np.set_printoptions(threshold=np.inf)
+
 
     print(f"\n开始特征提取，接收到矩阵形状：{original_signal_matrix.shape}。...")
     logging.info(f"\n开始特征提取，接收到矩阵形状：{original_signal_matrix.shape}。...")
@@ -30,11 +197,11 @@ def ex_feature(original_signal_matrix, Fc, task_index_Fea_Ext_Cal=None, queue_Fe
     # # % 储存时域信号数据以备后续处理（注意转置）
     # raw_data = Signal_time  # % 后续的希尔伯特变换以及FFT，是按列进行的，所以进行转置
 
-
-    raw_data = original_signal_matrix.T
-    len_ = raw_data.shape[0]
     Signal_fre = fft(original_signal_matrix, axis=1)
     number_of_data, length_per_data = Signal_fre.shape
+    raw_data = original_signal_matrix.T
+    len_ = raw_data.shape[0]
+
     ''' %% 特征值初始化 '''
 
     # if if_progress_display == 1:
@@ -51,6 +218,8 @@ def ex_feature(original_signal_matrix, Fc, task_index_Fea_Ext_Cal=None, queue_Fe
     ''' 注意虚部保留问题 '''
     # 信噪比
     SNRE = np.zeros(number_of_data, dtype=complex)
+    #IQ  不圆度
+    rho = np.zeros(number_of_data)
     # 相位噪声
     ph = np.zeros(number_of_data, dtype=complex)
     # 包络
@@ -81,34 +250,43 @@ def ex_feature(original_signal_matrix, Fc, task_index_Fea_Ext_Cal=None, queue_Fe
 
     # % 功率谱
 
-    # % 数据功率归一化
-    A_H_1 = np.imag(hilbert(np.real(raw_data), axis=0))  # % 对实数部分进行希尔伯特变换获取虚数部分
-    A_s = np.real(raw_data) + 1j * A_H_1  # % 生成解析信号
-
-    print("\n进入范数计算步骤。注意：此步可能触发多线程计算，CPU核心占用数量和占用率快速升高。")
-    logging.info("\n进入范数计算步骤。注意：此步可能触发多线程计算，CPU核心占用数量和占用率快速升高。")
-    ''' 这一行调了一天，注意 2-范数 和 Frobenius范数 '''
-    # A_envelope_HT = np.linalg.norm(A_s)  # % 计算包络的范数
-    A_envelope_HT = np.linalg.norm(A_s, 2)  # % 计算包络的范数
-    print("\n范数计算步骤结束。")
-    logging.info("\n范数计算步骤结束。")
-
-    A_envelope_mean = A_envelope_HT ** 2  # % 计算包络均值平方
-
-    print(
-        f"""\n重要参数记录：\nA_envelope_HT: {A_envelope_HT}, A_envelope_mean: {A_envelope_mean}, 
-        len(raw_data): {len(raw_data)}, np.sqrt(len(raw_data)): {np.sqrt(len(raw_data))}, 
-        raw_data.size: {raw_data.size}, np.sqrt(raw_data.size): {np.sqrt(raw_data.size)}\n"""
-    )
-    logging.info(
-        f"""\n重要参数记录：\nA_envelope_HT: {A_envelope_HT}, A_envelope_mean: {A_envelope_mean}, 
-        len(raw_data): {len(raw_data)}, np.sqrt(len(raw_data)): {np.sqrt(len(raw_data))}, 
-        raw_data.size: {raw_data.size}, np.sqrt(raw_data.size): {np.sqrt(raw_data.size)}\n"""
-    )
+    # # % 数据功率归一化
+    # A_H_1 = np.imag(hilbert(np.real(raw_data), axis=0))  # % 对实数部分进行希尔伯特变换获取虚数部分
+    # A_s = np.real(raw_data) + 1j * A_H_1  # % 生成解析信号
+    #
+    # print("\n进入范数计算步骤。注意：此步可能触发多线程计算，CPU核心占用数量和占用率快速升高。")
+    # logging.info("\n进入范数计算步骤。注意：此步可能触发多线程计算，CPU核心占用数量和占用率快速升高。")
+    # ''' 这一行调了一天，注意 2-范数 和 Frobenius范数 '''
+    # # A_envelope_HT = np.linalg.norm(A_s)  # % 计算包络的范数
+    # A_envelope_HT = np.linalg.norm(A_s, 2)  # % 计算包络的范数
+    # print("\n范数计算步骤结束。")
+    # logging.info("\n范数计算步骤结束。")
+    #
+    # A_envelope_mean = A_envelope_HT ** 2  # % 计算包络均值平方
+    #
+    # print(
+    #     f"""\n重要参数记录：\nA_envelope_HT: {A_envelope_HT}, A_envelope_mean: {A_envelope_mean},
+    #     len(raw_data): {len(raw_data)}, np.sqrt(len(raw_data)): {np.sqrt(len(raw_data))},
+    #     raw_data.size: {raw_data.size}, np.sqrt(raw_data.size): {np.sqrt(raw_data.size)}\n"""
+    # )
+    # logging.info(
+    #     f"""\n重要参数记录：\nA_envelope_HT: {A_envelope_HT}, A_envelope_mean: {A_envelope_mean},
+    #     len(raw_data): {len(raw_data)}, np.sqrt(len(raw_data)): {np.sqrt(len(raw_data))},
+    #     raw_data.size: {raw_data.size}, np.sqrt(raw_data.size): {np.sqrt(raw_data.size)}\n"""
+    # )
 
     ''' *** 此处注意问题 *** '''
     # raw_data = raw_data * np.sqrt(len(raw_data)) / A_envelope_mean  # % 对原始数据进行归一化
-    raw_data = raw_data * np.sqrt(raw_data.size) / A_envelope_mean  # % 对原始数据进行归一化
+    # raw_data = raw_data * np.sqrt(raw_data.size) / A_envelope_mean  # % 对原始数据进行归一化
+
+    A_s=raw_data
+    envelope_mean=np.abs(A_s)
+    phase = np.angle(A_s)
+
+    p = np.mean(np.abs(raw_data) ** 2, axis=0)  # (K,) 每段平均功率
+    raw_data = raw_data / np.sqrt(p)
+
+
 
     # 向主进程发送信号条数，用于在主进程中初始化该任务的进度条
     if queue_Fea_Ext_Cal_progress is not None:
@@ -187,50 +365,60 @@ def ex_feature(original_signal_matrix, Fc, task_index_Fea_Ext_Cal=None, queue_Fe
         # % 取绝对值
         SNRE_f = abs(SNRE)
 
+        ''' IQ  不圆度'''
+        rho[i] = np.abs(np.mean(y ** 2)) / (np.mean(np.abs(y) ** 2) )
+
         ''' %% 相位噪声 '''
+        # pn = phase_noise_features_no_ref(y, fs=1e7)
+        # ph[i] = pn["total_band"]
 
-        ph_n = len_  # % 获取信号长度
-        w = boxcar(ph_n)  # % 生成矩形窗
-        h = np.correlate(w, w, mode="full") / ph_n  # % 计算自相关
-        r = np.correlate(y, y, mode="full") / len(y)  # % 计算信号的自相关
-        p_h = np.zeros(2 * len_ - 1, dtype=complex)  # % 初始化相位噪声数组
 
-        # % 计算相位噪声
-        ''' 注意错误索引（索引偏移）下面译法是错的 '''
-        # for ii in range(-(len_ - 1), len_):
-        #     p_h[ii + len_] = (
-        #         h[ii + len_] * r[ii + len_] * np.exp(-1j * 2 * np.pi * Fc * ii)
-        #     )
-        for ii in range(-(len_ - 1), len_):
-            p_h[ii + len_ - 1] = (
-                    h[ii + len_ - 1] * r[ii + len_ - 1] * np.exp(-1j * 2 * np.pi * Fc * ii)
-            )
+        # ph_n = len_  # % 获取信号长度
+        # w = boxcar(ph_n)  # % 生成矩形窗
+        # h = np.correlate(w, w, mode="full") / ph_n  # % 计算自相关
+        # r = np.correlate(y, np.conj(y), mode="full") / len(y)  # % 计算信号的自相关
+        #
+        # # % 计算相位噪声
+        # ''' 注意错误索引（索引偏移）下面译法是错的 '''
+        # # for ii in range(-(len_ - 1), len_):
+        # #     p_h[ii + len_] = (
+        # #         h[ii + len_] * r[ii + len_] * np.exp(-1j * 2 * np.pi * Fc * ii)
+        # #     )
+        # # for ii in range(-(len_ - 1), len_):
+        # #     p_h[ii + len_ - 1] = (
+        # #             h[ii + len_ - 1] * r[ii + len_ - 1] * np.exp(-1j * 2 * np.pi * Fc * ii)
+        # #     )
+        # lags=np.arange(-(L-1),L)
+        # Fc=0.0
+        # p_h = h * r * np.exp(-1j * 2 * np.pi * Fc * lags)
+        # ph[i] = np.sum(p_h)
 
-        ''' 注意虚部保留问题 '''
-        ph[i] = np.sum(p_h)  # % 储存相位噪声值
-        ph_f = abs(ph)  # % 取绝对值
+        pn = phase_noise_features_no_ref(y, Fs)
+        # 你原来 ph[i] 是一个标量：建议先用 total_band 替代
+        ph[i] = pn["total_band"]
 
         ''' %% 信号预处理  基带信号低通滤波 '''
-
         # N = len_  # % 获取信号长度
         # wc = 3180 / N  # % 计算归一化截止频率
         # ''' b = firwin(N, wc)  # % 设计FIR低通滤波器 这个是错的 '''
         # b = firwin(N + 1, wc)  # % 设计FIR低通滤波器
         # y_after_fir = lfilter(b, 1, y)  # % 对信号进行滤波
-        y_after_fir=y
-
         ''' %% Hilbert变化取包络 '''
+        # # % 过滤后的信号
+        # y_1_1 = y_after_fir
+        # # % 计算Hilbert变换的虚部
+        # y_H_1 = np.imag(hilbert(np.real(y_1_1)))  # Hilbert变化
+        # # % 构造解析信号
+        # y_s = np.real(y_1_1) + 1j * y_H_1  # 解析信号
+        # # % 计算信号包络
+        # y_envelope_HT = abs(y_s)  # 包络
+        # # % 计算包络均值
+        # y_envelope_mean[i] = np.sum(y_envelope_HT) / len(y_envelope_HT)
 
-        # % 过滤后的信号
-        y_1_1 = y_after_fir
-        # % 计算Hilbert变换的虚部
-        y_H_1 = np.imag(hilbert(np.real(y_1_1)))  # Hilbert变化
-        # % 构造解析信号
-        y_s = np.real(y_1_1) + 1j * y_H_1  # 解析信号
-        # % 计算信号包络
-        y_envelope_HT = abs(y_s)  # 包络
-        # % 计算包络均值
-        y_envelope_mean[i] = np.sum(y_envelope_HT) / len(y_envelope_HT)
+        y_1_1 = y
+        y_envelope_HT = np.abs(y_1_1)  # IQ 包络
+        y_envelope_mean[i] = np.mean(y_envelope_HT)
+
 
         ''' %% 取包络特征 '''
 
@@ -241,9 +429,7 @@ def ex_feature(original_signal_matrix, Fc, task_index_Fea_Ext_Cal=None, queue_Fe
         # % 初始化RJ特征数组
         y_envelope = np.zeros(len(y_envelope_use))
         # % 计算包络的二阶矩
-        m2_y_envelope = np.sum(np.abs(y_envelope_use) ** 2) / len(
-            y_envelope_use
-        )  # 二阶矩
+        m2_y_envelope = np.sum(np.abs(y_envelope_use) ** 2) / len(y_envelope_use)  # 二阶矩
         # % 计算包络的四阶矩
         for m in range(len(y_envelope_use)):
             y_envelope[m] = y_envelope_use[m] ** 4
@@ -263,7 +449,7 @@ def ex_feature(original_signal_matrix, Fc, task_index_Fea_Ext_Cal=None, queue_Fe
         for m in range(len(y_envelope_use) - 1):
             sum_Db[m] = (
                                 max(y_envelope_use[m], y_envelope_use[m + 1]) * d
-                                - min(y_envelope_use[m], y_envelope_HT[m + 1]) * d
+                                - min(y_envelope_use[m], y_envelope_use[m + 1]) * d
                         ) / d ** 2
         N_d = len(y_envelope_use) + np.sum(sum_Db)  # % 计算盒维数总和
         Db[i] = -np.log(N_d) / np.log(d)  # % 计算盒维数
@@ -285,22 +471,19 @@ def ex_feature(original_signal_matrix, Fc, task_index_Fea_Ext_Cal=None, queue_Fe
 
         # % 去直流分量
         y_a = y_envelope_use - np.sum(y_envelope_use) / len(y_envelope_use)  # 去直流
-        # % 初始化差分数组
-        y_c = np.zeros(len(y_envelope_use))
         # % 计算差分
-        for n in range(len(y_envelope_use) - 1):
-            y_c[n] = abs(y_a[n + 1] - y_a[n])
-        # % 初始化二值化数组
-        y_q = np.zeros(len(y_c) - 1)
-        # % 二值化处理
-        for n in range(len(y_c) - 1):
-            y_q[n] = 0 if y_c[n] < np.sum(y_c) / len(y_c) else 1
+        y_c = np.abs(np.diff(y_a))
 
+        if len(y_c) < 2 or np.mean(y_c) < 1e-12:
+            LZC_y[i] = 0.0
+            continue
+        #  二值化阈值（更稳健：median；也可用 mean）
+        y_q = (y_c >= (np.mean(y_c))).astype(np.uint8)  # 0/1 序列
         y_q_str = "".join(map(str, y_q.astype(int)))  # % 转换为字符串
+
         c = 1  # % 初始化复杂度计数器
         S = y_q_str[0]  # % 初始化字符串S
         Q = ""  # % 初始化字符串Q
-        SQ = ""  # % 初始化组合字符串SQ
 
         for n in range(1, len(y_q_str)):  # % 计算LZC复杂度
             Q += y_q_str[n]
@@ -311,6 +494,8 @@ def ex_feature(original_signal_matrix, Fc, task_index_Fea_Ext_Cal=None, queue_Fe
                 Q = ""
                 c += 1
 
+        if Q != "":
+            c += 1
                 # % 计算LZC复杂度特征值
         LZC_y[i] = c * np.log10(len(y_q_str)) / len(y_q_str)  # LZC特征值
 
@@ -365,6 +550,7 @@ def ex_feature(original_signal_matrix, Fc, task_index_Fea_Ext_Cal=None, queue_Fe
         [
             # theta, Constellation_1, Constellation_2, Constellation_3,
             SNRE_f,
+            rho,
             ph,
             y_envelope_mean,
             R_HT, J_HT,
@@ -389,3 +575,5 @@ def ex_feature(original_signal_matrix, Fc, task_index_Fea_Ext_Cal=None, queue_Fe
         )
 
     return Feature
+
+

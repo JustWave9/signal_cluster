@@ -20,8 +20,8 @@ def get_true_label(filename):
 
 
 # 主程序参数
-folder = r'D:\matrixlab\match_tar\test27TPLB'  # 修改为你的信号路径
-Fs = 1e7  # 采样率
+folder = r'D:\matrixlab\match_tar\test29TPLB'  # 修改为你的信号路径
+Fs = 1e7  #采样率
 save_path = "test8w5.npz"  # 保存标准化特征文件名
 
 if os.path.exists(save_path):
@@ -49,19 +49,20 @@ else:
     feature_matrix=ex_feature(original_signal_matrix, Fs)
 
     X = np.array(feature_matrix)
-    # scaler = StandardScaler()
-    # X_scaled = scaler.fit_transform(X)
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
     # # 保存标准化特征和文件名列表
     # np.savez(save_path, X_scaled=X_scaled, file_list=file_list)
     print(f"特征提取完毕，保存至 {save_path}")
 
-# for i in range(len(file_list)):
-#     print(file_list[i])
-#     print(X_scaled[i])
+for i in range(len(file_list)):
+    print(file_list[i])
+    print(X[i])
 
 # KMeans 五类聚类
 kmeans = KMeans(n_clusters=5, random_state=3, n_init=20)
-labels = kmeans.fit_predict(X)
+labels = kmeans.fit_predict(X_scaled)
 
 # 构造真实标签
 y_true = np.array([get_true_label(fname) - 1 for fname in file_list])
@@ -81,7 +82,7 @@ labels_aligned = align_kmeans_labels(y_true, labels)
 
 # ===== PCA 可视化 =====
 pca = PCA(n_components=2)
-X_pca = pca.fit_transform(X)
+X_pca = pca.fit_transform(X_scaled)
 
 plt.figure(figsize=(8, 6))
 palette = sns.color_palette("bright", num_classes)
