@@ -5,7 +5,7 @@ import scipy.io
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report, accuracy_score
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report, accuracy_score,adjusted_rand_score
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
@@ -68,6 +68,10 @@ labels = kmeans.fit_predict(X_scaled)
 y_true = np.array([get_true_label(fname) - 1 for fname in file_list])
 num_classes = len(np.unique(y_true))
 
+ari = adjusted_rand_score(y_true, labels)
+print("ARI =", ari)
+# adjusted_rand_score(y_true, labels)
+
 # ===== 标签对齐（关键）=====
 from scipy.optimize import linear_sum_assignment
 from sklearn.metrics import confusion_matrix
@@ -88,7 +92,7 @@ plt.figure(figsize=(8, 6))
 palette = sns.color_palette("bright", num_classes)
 
 for cls in range(num_classes):
-    idx = labels_aligned == cls
+    idx = y_true == cls
     plt.scatter(
         X_pca[idx, 0],
         X_pca[idx, 1],

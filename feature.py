@@ -49,7 +49,8 @@ def phase_increment_series_no_ref(
     if float(np.mean(v)) < min_valid_ratio:
         return np.array([], dtype=float)
 
-    z = y[1:][v] * np.conj(y[:-1][v])
+    u = y / (np.abs(y)+ 1e-12)
+    z = u[1:][v] * np.conj(u[:-1][v])
 
     # 避免 angle(接近0) 抖动
     z_amp = np.abs(z)
@@ -222,6 +223,9 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
     rho = np.zeros(number_of_data)
     # 相位噪声
     ph = np.zeros(number_of_data, dtype=complex)
+    pn_b1 = np.zeros(number_of_data)  # 5k~50k
+    pn_b2 = np.zeros(number_of_data)  # 50k~500k
+    pn_b3 = np.zeros(number_of_data)  # 500k~2M
     # 包络
     y_envelope_mean = np.zeros(number_of_data)
     # RJ特征
@@ -284,7 +288,7 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
     phase = np.angle(A_s)
 
     p = np.mean(np.abs(raw_data) ** 2, axis=0)  # (K,) 每段平均功率
-    raw_data = raw_data / np.sqrt(p)
+    # raw_data = raw_data / np.sqrt(p)
 
 
 
@@ -366,7 +370,8 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
         SNRE_f = abs(SNRE)
 
         ''' IQ  不圆度'''
-        rho[i] = np.abs(np.mean(y ** 2)) / (np.mean(np.abs(y) ** 2) )
+        y0=y-np.mean(y)
+        rho[i] = np.abs(np.mean(y0 ** 2)) / (np.mean(np.abs(y0) ** 2) )
 
         ''' %% 相位噪声 '''
         # pn = phase_noise_features_no_ref(y, fs=1e7)
@@ -395,7 +400,10 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
 
         pn = phase_noise_features_no_ref(y, Fs)
         # 你原来 ph[i] 是一个标量：建议先用 total_band 替代
-        ph[i] = pn["total_band"]
+        ph[i] = np.log10(pn["total_band"]+ 1e-20)
+        pn_b1[i] = np.log10(pn["band_5000_50000"]+ 1e-20)
+        pn_b2[i] = np.log10(pn["band_50000_500000"]+ 1e-20)
+        pn_b3[i] = np.log10(pn["band_500000_2000000"]+ 1e-20)
 
         ''' %% 信号预处理  基带信号低通滤波 '''
         # N = len_  # % 获取信号长度
@@ -500,39 +508,39 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
         LZC_y[i] = c * np.log10(len(y_q_str)) / len(y_q_str)  # LZC特征值
 
         ''' %% 信号特征 '''
-
-        Y = y_1_1 - y  # % 计算信号差分
-        P_u[i] = np.sum(abs(Y)) / len(Y)  # % 计算均值
-        Y_mean = np.sum(Y) / len(Y)  # % 计算信号均值
-        P_o[i] = np.sum((abs(Y - Y_mean) ** 2)) / len(Y)  # % 计算信号方差
-        P_y[i] = (np.sum((abs(Y - Y_mean) ** 3)) / len(Y)) / (  # % 计算偏度
-                np.sum((abs(Y - Y_mean) ** 3)) ** 1.5 / len(Y)
-        )
-        P_k[i] = (np.sum((abs(Y - Y_mean) ** 4)) / len(Y)) / (  # % 计算峰度
-                np.sum((abs(Y - Y_mean) ** 2)) ** 2 / len(Y)
-        )
-        y_x1 = Y[: len(Y) // 2]  # % 前半部分信号
-        y_x2 = Y[len(Y) // 2:]  # % 后半部分信号
-        ''' y_x2 = Y[len(Y) // 2 + 1:]  # % 后半部分信号 这个写法是错的 '''
-        P_x[i] = (np.sum(abs(y_x1)) / len(Y)) / (np.sum(abs(y_x2)) / len(Y))  # % 计算前后半部分信号的比率
-
-        ''' %% 功率谱特征 '''
-        P_NOW = fft(y_1_1)  # % 计算当前信号的傅里叶变换
-        P = P_NOW - P_USE  # % 计算功率谱差分
-
-        P_U[i] = np.sum(abs(P)) / len(P)  # % 计算总功率
-        P_mean = np.sum(P) / len(P)  # % 计算功率均值
-        P_O[i] = np.sum((abs(P - P_mean) ** 2)) / len(P)  # % 计算功率方差
-        P_Y[i] = (np.sum((abs(P - P_mean) ** 3)) / len(P)) / (  # % 计算功率偏度
-                np.sum((abs(P - P_mean) ** 3)) ** 1.5 / len(P)
-        )
-        P_K[i] = (np.sum((abs(P - P_mean) ** 4)) / len(P)) / (  # % 计算功率峰度
-                np.sum((abs(P - P_mean) ** 2)) ** 2 / len(P)
-        )
-        P_x1 = P[: len(P) // 2]  # % 前半部分功率谱
-        P_x2 = P[len(P) // 2:]  # % 后半部分功率谱
-        ''' P_x2 = P[len(P) // 2 + 1 :]  # 后半部分功率谱 这个写法是错的 '''
-        P_X[i] = (np.sum(abs(P_x1)) / len(P)) / (np.sum(abs(P_x2)) / len(P))  # % 计算前后半部分功率谱的比率
+        #
+        # Y = y_1_1 - y  # % 计算信号差分
+        # P_u[i] = np.sum(abs(Y)) / len(Y)  # % 计算均值
+        # Y_mean = np.sum(Y) / len(Y)  # % 计算信号均值
+        # P_o[i] = np.sum((abs(Y - Y_mean) ** 2)) / len(Y)  # % 计算信号方差
+        # P_y[i] = (np.sum((abs(Y - Y_mean) ** 3)) / len(Y)) / (  # % 计算偏度
+        #         np.sum((abs(Y - Y_mean) ** 3)) ** 1.5 / len(Y)
+        # )
+        # P_k[i] = (np.sum((abs(Y - Y_mean) ** 4)) / len(Y)) / (  # % 计算峰度
+        #         np.sum((abs(Y - Y_mean) ** 2)) ** 2 / len(Y)
+        # )
+        # y_x1 = Y[: len(Y) // 2]  # % 前半部分信号
+        # y_x2 = Y[len(Y) // 2:]  # % 后半部分信号
+        # ''' y_x2 = Y[len(Y) // 2 + 1:]  # % 后半部分信号 这个写法是错的 '''
+        # P_x[i] = (np.sum(abs(y_x1)) / len(Y)) / (np.sum(abs(y_x2)) / len(Y))  # % 计算前后半部分信号的比率
+        #
+        # ''' %% 功率谱特征 '''
+        # P_NOW = fft(y_1_1)  # % 计算当前信号的傅里叶变换
+        # P = P_NOW - P_USE  # % 计算功率谱差分
+        #
+        # P_U[i] = np.sum(abs(P)) / len(P)  # % 计算总功率
+        # P_mean = np.sum(P) / len(P)  # % 计算功率均值
+        # P_O[i] = np.sum((abs(P - P_mean) ** 2)) / len(P)  # % 计算功率方差
+        # P_Y[i] = (np.sum((abs(P - P_mean) ** 3)) / len(P)) / (  # % 计算功率偏度
+        #         np.sum((abs(P - P_mean) ** 3)) ** 1.5 / len(P)
+        # )
+        # P_K[i] = (np.sum((abs(P - P_mean) ** 4)) / len(P)) / (  # % 计算功率峰度
+        #         np.sum((abs(P - P_mean) ** 2)) ** 2 / len(P)
+        # )
+        # P_x1 = P[: len(P) // 2]  # % 前半部分功率谱
+        # P_x2 = P[len(P) // 2:]  # % 后半部分功率谱
+        # ''' P_x2 = P[len(P) // 2 + 1 :]  # 后半部分功率谱 这个写法是错的 '''
+        # P_X[i] = (np.sum(abs(P_x1)) / len(P)) / (np.sum(abs(P_x2)) / len(P))  # % 计算前后半部分功率谱的比率
 
         # if if_progress_display == 1:
         #     # % 更新进度条
@@ -552,6 +560,9 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
             SNRE_f,
             rho,
             ph,
+            # pn_b1,
+            pn_b2,
+            pn_b3,
             y_envelope_mean,
             R_HT, J_HT,
             Db,
