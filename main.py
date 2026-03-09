@@ -20,7 +20,7 @@ def get_true_label(filename):
 
 
 # 主程序参数
-folder = r'D:\matrixlab\match_tar\test29TPLB'  # 修改为你的信号路径
+folder = r'D:\matrixlab\match_tar\test33TPLB_use'  # 修改为你的信号路径
 Fs = 1e7  #采样率
 save_path = "test8w5.npz"  # 保存标准化特征文件名
 
@@ -33,22 +33,23 @@ else:
     print("未检测到保存文件，开始提取特征...")
     signal_list = []
     file_list = []
+    features_list = []
     for file in tqdm(os.listdir(folder)):
         if file.endswith('.mat'):
             path = os.path.join(folder, file)
             data = scipy.io.loadmat(path)
-            if 'fil_base' in data:
-                signal = data['fil_base']
+            if 'x_use' in data:
+                signal = data['x_use']
                 if signal.ndim > 1:
                     signal = signal.flatten()
-                signal_list.append(signal)
+                # signal_list.append(signal)
                 file_list.append(file)
-                # feature_vector = extract_feature(signal[np.newaxis, :], Fs)[0]
-                # features_list.append(feature_vector)
-    original_signal_matrix = np.vstack(signal_list)
-    feature_matrix=ex_feature(original_signal_matrix, Fs)
-
-    X = np.array(feature_matrix)
+                feature_vector = ex_feature(signal[np.newaxis, :], Fs)[0]
+                features_list.append(feature_vector)
+    # original_signal_matrix = np.vstack(signal_list)
+    # feature_matrix=ex_feature(original_signal_matrix, Fs)
+    # X = np.array(feature_matrix)
+    X = np.array(features_list)
 
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)

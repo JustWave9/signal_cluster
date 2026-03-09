@@ -178,26 +178,10 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
     # # 调试此计算脚本时，用来打印变量的详细值的，平时不用管
     # np.set_printoptions(threshold=np.inf)
 
-
     print(f"\n开始特征提取，接收到矩阵形状：{original_signal_matrix.shape}。...")
     logging.info(f"\n开始特征提取，接收到矩阵形状：{original_signal_matrix.shape}。...")
 
     ''' %% 频域转时域 '''
-
-    # # % 获取输入信号的尺寸，Ndata为数据数量，len1为信号长度
-    # number_of_data, length_per_data = original_signal_matrix.shape
-    # # % 在信号两侧补零，形成扩展的频域信号
-    # Signal_fre = np.hstack(
-    #     [np.zeros((number_of_data, 410 + 4 * 12)), original_signal_matrix, np.zeros((number_of_data, 410 + 4 * 12))]
-    # )
-    # # % 对频域信号进行频移和逆傅里叶变换，转换到时域
-    # ''' Signal_time = np.fft.ifft(np.fft.fftshift(Signal_fre.T, axes=0)) 这样算出来和MATLAB对不上'''
-    # Signal_time = ifft(fftshift(Signal_fre.T, axes=0), axis=0)
-    # # % 获取时域信号的长度
-    # len_ = Signal_time.shape[0]
-    # # % 储存时域信号数据以备后续处理（注意转置）
-    # raw_data = Signal_time  # % 后续的希尔伯特变换以及FFT，是按列进行的，所以进行转置
-
     Signal_fre = fft(original_signal_matrix, axis=1)
     number_of_data, length_per_data = Signal_fre.shape
     raw_data = original_signal_matrix.T
@@ -205,22 +189,17 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
 
     ''' %% 特征值初始化 '''
 
-    # if if_progress_display == 1:
-    #     # % 如果处于模式1，则初始化进度条
-    #     print("进度条初始化...")
 
     # % 初始化各种特征值矩阵
-    # 星座图
-    # theta = np.zeros(number_of_data)
-    # Constellation_1 = np.zeros(number_of_data)
-    # Constellation_2 = np.zeros(number_of_data)
-    # Constellation_3 = np.zeros(number_of_data)
 
     ''' 注意虚部保留问题 '''
     # 信噪比
     SNRE = np.zeros(number_of_data, dtype=complex)
     #IQ  不圆度
     rho = np.zeros(number_of_data)
+    #mean(y**2)相位
+    psi_cos= np.zeros(number_of_data)
+    psi_sin=np.zeros(number_of_data)
     # 相位噪声
     ph = np.zeros(number_of_data, dtype=complex)
     pn_b1 = np.zeros(number_of_data)  # 5k~50k
@@ -252,44 +231,13 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
 
     ''' %% 特征提取 '''
 
-    # % 功率谱
-
-    # # % 数据功率归一化
-    # A_H_1 = np.imag(hilbert(np.real(raw_data), axis=0))  # % 对实数部分进行希尔伯特变换获取虚数部分
-    # A_s = np.real(raw_data) + 1j * A_H_1  # % 生成解析信号
-    #
-    # print("\n进入范数计算步骤。注意：此步可能触发多线程计算，CPU核心占用数量和占用率快速升高。")
-    # logging.info("\n进入范数计算步骤。注意：此步可能触发多线程计算，CPU核心占用数量和占用率快速升高。")
-    # ''' 这一行调了一天，注意 2-范数 和 Frobenius范数 '''
-    # # A_envelope_HT = np.linalg.norm(A_s)  # % 计算包络的范数
-    # A_envelope_HT = np.linalg.norm(A_s, 2)  # % 计算包络的范数
-    # print("\n范数计算步骤结束。")
-    # logging.info("\n范数计算步骤结束。")
-    #
-    # A_envelope_mean = A_envelope_HT ** 2  # % 计算包络均值平方
-    #
-    # print(
-    #     f"""\n重要参数记录：\nA_envelope_HT: {A_envelope_HT}, A_envelope_mean: {A_envelope_mean},
-    #     len(raw_data): {len(raw_data)}, np.sqrt(len(raw_data)): {np.sqrt(len(raw_data))},
-    #     raw_data.size: {raw_data.size}, np.sqrt(raw_data.size): {np.sqrt(raw_data.size)}\n"""
-    # )
-    # logging.info(
-    #     f"""\n重要参数记录：\nA_envelope_HT: {A_envelope_HT}, A_envelope_mean: {A_envelope_mean},
-    #     len(raw_data): {len(raw_data)}, np.sqrt(len(raw_data)): {np.sqrt(len(raw_data))},
-    #     raw_data.size: {raw_data.size}, np.sqrt(raw_data.size): {np.sqrt(raw_data.size)}\n"""
-    # )
-
     ''' *** 此处注意问题 *** '''
-    # raw_data = raw_data * np.sqrt(len(raw_data)) / A_envelope_mean  # % 对原始数据进行归一化
-    # raw_data = raw_data * np.sqrt(raw_data.size) / A_envelope_mean  # % 对原始数据进行归一化
-
     A_s=raw_data
     envelope_mean=np.abs(A_s)
     phase = np.angle(A_s)
 
     p = np.mean(np.abs(raw_data) ** 2, axis=0)  # (K,) 每段平均功率
     # raw_data = raw_data / np.sqrt(p)
-
 
 
     # 向主进程发送信号条数，用于在主进程中初始化该任务的进度条
@@ -306,58 +254,6 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
         y = raw_data[:, i]  # % 获取第i个样本的时域数据
         P_USE = Signal_fre[i, :]  # % 获取对应的频域信号
 
-        # ''' %% 星座图 '''
-        #
-        # # % 初始化计数器和累加器
-        # k, l, m, p = 0, 0, 0, 0
-        # y1_sum, y2_sum, y3_sum, y4_sum = 0, 0, 0, 0
-        #
-        # # % 遍历有效信号部分
-        # ''' 注意索引偏移问题 '''
-        # # for n in range(459, 459 + length_per_data):
-        # for n in range(459 - 1, 459 + length_per_data - 1):
-        #     if P_USE[n].real > 0:
-        #         if P_USE[n].imag > 0:
-        #             k += 1
-        #             y1_sum += P_USE[n]  # % 第一象限累加
-        #         else:
-        #             l += 1
-        #             y4_sum += P_USE[n]  # % 第四象限累加
-        #     elif P_USE[n].real <= 0:
-        #         if P_USE[n].imag > 0:
-        #             m += 1
-        #             y2_sum += P_USE[n]  # % 第二象限累加
-        #         elif P_USE[n].imag < 0:
-        #             p += 1
-        #             y3_sum += P_USE[n]  # % 第三象限累加
-        #
-        # # % 计算各象限的均值
-        # y1_mean = y1_sum / k if k != 0 else 0
-        # y2_mean = y2_sum / m if m != 0 else 0
-        # y3_mean = y3_sum / p if p != 0 else 0
-        # y4_mean = y4_sum / l if l != 0 else 0
-        # # % 计算星座图特征
-        # A51 = abs(y1_mean - y2_mean)
-        # A61 = abs(y2_mean - y3_mean)
-        # A71 = abs(y4_mean - y3_mean)
-        # A81 = abs(y4_mean - y1_mean)
-        # K1 = abs(y1_mean - y3_mean)
-        # K2 = abs(y2_mean - y4_mean)
-        # A91 = [A51, A61, A71, A81]
-        # theta1 = abs(180 / np.pi * np.angle((y1_mean - y2_mean) / (y4_mean - y1_mean)))
-        # theta2 = abs(180 / np.pi * np.angle((y1_mean - y2_mean) / (y2_mean - y3_mean)))
-        # theta3 = abs(180 / np.pi * np.angle((y2_mean - y3_mean) / (y3_mean - y4_mean)))
-        # theta4 = abs(180 / np.pi * np.angle((y3_mean - y4_mean) / (y4_mean - y1_mean)))
-        # theta0 = [theta1, theta2, theta3, theta4]
-        #
-        # # % 储存特征值
-        # theta[i] = 180 - abs(
-        #     180 / np.pi * np.angle((y1_mean - y3_mean) / (y2_mean - y3_mean))
-        # )
-        # Constellation_1[i] = max(A91) / min(A91) if min(A91) != 0 else 0
-        # Constellation_2[i] = max(K1, K2) / min(K1, K2) if min(K1, K2) != 0 else 0
-        # Constellation_3[i] = max(theta0)
-
         ''' %% 信噪比 '''
 
         # % 计算信号的二阶矩
@@ -366,38 +262,17 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
         m = np.sum((np.conj(y) * y) ** 2) / len(y)  # % 四阶矩
         # % 计算信噪比
         SNRE[i] = 10 * np.log10(np.sqrt(2 * q ** 2 - m) / (q - np.sqrt(2 * q ** 2 - m)))
-        # % 取绝对值
-        SNRE_f = abs(SNRE)
 
         ''' IQ  不圆度'''
         y0=y-np.mean(y)
+        c20 = np.mean(y0 ** 2)
+        # pwr = np.mean(np.abs(y0) ** 2) + 1e-12
         rho[i] = np.abs(np.mean(y0 ** 2)) / (np.mean(np.abs(y0) ** 2) )
+        psi_cos[i] = np.real(c20) / (np.abs(c20) + 1e-12)
+        psi_sin[i] = np.imag(c20) / (np.abs(c20) + 1e-12)
+
 
         ''' %% 相位噪声 '''
-        # pn = phase_noise_features_no_ref(y, fs=1e7)
-        # ph[i] = pn["total_band"]
-
-
-        # ph_n = len_  # % 获取信号长度
-        # w = boxcar(ph_n)  # % 生成矩形窗
-        # h = np.correlate(w, w, mode="full") / ph_n  # % 计算自相关
-        # r = np.correlate(y, np.conj(y), mode="full") / len(y)  # % 计算信号的自相关
-        #
-        # # % 计算相位噪声
-        # ''' 注意错误索引（索引偏移）下面译法是错的 '''
-        # # for ii in range(-(len_ - 1), len_):
-        # #     p_h[ii + len_] = (
-        # #         h[ii + len_] * r[ii + len_] * np.exp(-1j * 2 * np.pi * Fc * ii)
-        # #     )
-        # # for ii in range(-(len_ - 1), len_):
-        # #     p_h[ii + len_ - 1] = (
-        # #             h[ii + len_ - 1] * r[ii + len_ - 1] * np.exp(-1j * 2 * np.pi * Fc * ii)
-        # #     )
-        # lags=np.arange(-(L-1),L)
-        # Fc=0.0
-        # p_h = h * r * np.exp(-1j * 2 * np.pi * Fc * lags)
-        # ph[i] = np.sum(p_h)
-
         pn = phase_noise_features_no_ref(y, Fs)
         # 你原来 ph[i] 是一个标量：建议先用 total_band 替代
         ph[i] = np.log10(pn["total_band"]+ 1e-20)
@@ -405,31 +280,9 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
         pn_b2[i] = np.log10(pn["band_50000_500000"]+ 1e-20)
         pn_b3[i] = np.log10(pn["band_500000_2000000"]+ 1e-20)
 
-        ''' %% 信号预处理  基带信号低通滤波 '''
-        # N = len_  # % 获取信号长度
-        # wc = 3180 / N  # % 计算归一化截止频率
-        # ''' b = firwin(N, wc)  # % 设计FIR低通滤波器 这个是错的 '''
-        # b = firwin(N + 1, wc)  # % 设计FIR低通滤波器
-        # y_after_fir = lfilter(b, 1, y)  # % 对信号进行滤波
-        ''' %% Hilbert变化取包络 '''
-        # # % 过滤后的信号
-        # y_1_1 = y_after_fir
-        # # % 计算Hilbert变换的虚部
-        # y_H_1 = np.imag(hilbert(np.real(y_1_1)))  # Hilbert变化
-        # # % 构造解析信号
-        # y_s = np.real(y_1_1) + 1j * y_H_1  # 解析信号
-        # # % 计算信号包络
-        # y_envelope_HT = abs(y_s)  # 包络
-        # # % 计算包络均值
-        # y_envelope_mean[i] = np.sum(y_envelope_HT) / len(y_envelope_HT)
-
-        y_1_1 = y
-        y_envelope_HT = np.abs(y_1_1)  # IQ 包络
-        y_envelope_mean[i] = np.mean(y_envelope_HT)
-
-
         ''' %% 取包络特征 '''
-
+        y_envelope_HT = np.abs(y)  # IQ 包络
+        y_envelope_mean[i] = np.mean(y_envelope_HT)
         y_envelope_use = y_envelope_HT
 
         ''' %% RJ特征 '''
@@ -557,14 +410,17 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
     feature_matrix = np.column_stack(
         [
             # theta, Constellation_1, Constellation_2, Constellation_3,
-            SNRE_f,
+            SNRE,
             rho,
-            ph,
+            # psi_cos,
+            # psi_sin,
+            # ph,
             # pn_b1,
             pn_b2,
             pn_b3,
             y_envelope_mean,
-            R_HT, J_HT,
+            R_HT,
+            J_HT,
             Db,
             Di,
             LZC_y,
@@ -577,8 +433,8 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
     # # % 可选的特征归一化
     # Feature = normalize(Feature, axis=1)
 
-    print(f"结束特征提取，返回的矩阵形状：{Feature.shape}")
-    logging.info(f"结束特征提取，返回的矩阵形状：{Feature.shape}")
+    # print(f"结束特征提取，返回的矩阵形状：{Feature.shape}")
+    # logging.info(f"结束特征提取，返回的矩阵形状：{Feature.shape}")
 
     if queue_Fea_Ext_Cal_progress is not None:
         queue_Fea_Ext_Cal_progress.put(
@@ -586,5 +442,6 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
         )
 
     return Feature
+    # return feature_matrix
 
 
