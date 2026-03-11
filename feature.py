@@ -136,7 +136,7 @@ def phase_noise_features_no_ref(
         amp_thr_ratio: float = 0.08,
         detrend_linear: bool = False,
         # len_=10000 => 1 ms => Δf ~ 1kHz，故建议使用 kHz~MHz 频段
-        bands_hz: Tuple[Tuple[float, float], ...] = ((5e3, 5e4), (5e4, 5e5), (5e5, 2e6)),
+        bands_hz: Tuple[Tuple[float, float], ...] = ((2e3, 3e4), (2e3, 1e4), (1e4, 3e4), (3e4, 8e4)),
         return_spectrum: bool = False,
 ) -> Dict[str, float]:
     """
@@ -230,14 +230,15 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
     P_X = np.zeros(number_of_data)
 
     ''' %% 特征提取 '''
+    eps=1e-12
+    log_eps=1e-20
 
-    ''' *** 此处注意问题 *** '''
-    A_s=raw_data
-    envelope_mean=np.abs(A_s)
-    phase = np.angle(A_s)
-
-    p = np.mean(np.abs(raw_data) ** 2, axis=0)  # (K,) 每段平均功率
-    # raw_data = raw_data / np.sqrt(p)
+    # A_s=raw_data
+    # envelope_mean=np.abs(A_s)
+    # phase = np.angle(A_s)
+    #
+    # p = np.mean(np.abs(raw_data) ** 2, axis=0)  # (K,) 每段平均功率
+    # # raw_data = raw_data / np.sqrt(p)
 
 
     # 向主进程发送信号条数，用于在主进程中初始化该任务的进度条
@@ -252,55 +253,56 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
     for i in tqdm(range(number_of_data), desc="当前矩阵提取进度"):  # % 遍历每个数据样本
 
         y = raw_data[:, i]  # % 获取第i个样本的时域数据
-        P_USE = Signal_fre[i, :]  # % 获取对应的频域信号
+        # P_USE = Signal_fre[i, :]  # % 获取对应的频域信号
 
         ''' %% 信噪比 '''
+        q = np.mean(np.abs(y) ** 2)     #  二阶矩
+        m = np.mean(np.abs(y) ** 4)     #     四阶矩
+        tmp = 2 * q ** 2 - m
+        tmp = max(tmp, eps)
+        sqrt_term = np.sqrt(tmp)
 
-        # % 计算信号的二阶矩
-        q = np.sum(y * np.conj(y)) / len(y)  # % 二阶矩
-        # % 计算信号的四阶矩
-        m = np.sum((np.conj(y) * y) ** 2) / len(y)  # % 四阶矩
-        # % 计算信噪比
-        SNRE[i] = 10 * np.log10(np.sqrt(2 * q ** 2 - m) / (q - np.sqrt(2 * q ** 2 - m)))
+        den = q - sqrt_term
+        den = max(den, eps)
+
+        ratio = sqrt_term / den
+        ratio = max(ratio, eps)
+
+        SNRE[i] = 10 * np.log10(ratio)
+
 
         ''' IQ  不圆度'''
         y0=y-np.mean(y)
         c20 = np.mean(y0 ** 2)
-        # pwr = np.mean(np.abs(y0) ** 2) + 1e-12
-        rho[i] = np.abs(np.mean(y0 ** 2)) / (np.mean(np.abs(y0) ** 2) )
-        psi_cos[i] = np.real(c20) / (np.abs(c20) + 1e-12)
-        psi_sin[i] = np.imag(c20) / (np.abs(c20) + 1e-12)
+        den_rho = np.mean(np.abs(y0) ** 2)
+        den_rho = max(den_rho, eps)
+
+        rho[i] = np.abs(c20) / den_rho
+
+        c20_abs = max(np.abs(c20), eps)
+        psi_cos[i] = np.real(c20) / c20_abs
+        psi_sin[i] = np.imag(c20) / c20_abs
 
 
         ''' %% 相位噪声 '''
         pn = phase_noise_features_no_ref(y, Fs)
         # 你原来 ph[i] 是一个标量：建议先用 total_band 替代
-        ph[i] = np.log10(pn["total_band"]+ 1e-20)
-        pn_b1[i] = np.log10(pn["band_5000_50000"]+ 1e-20)
-        pn_b2[i] = np.log10(pn["band_50000_500000"]+ 1e-20)
-        pn_b3[i] = np.log10(pn["band_500000_2000000"]+ 1e-20)
+        ph[i] = np.log10(pn["band_2000_30000"]+ 1e-20)
+        pn_b1[i] = np.log10(pn["band_2000_10000"]+ 1e-20)
+        pn_b2[i] = np.log10(pn["band_10000_30000"]+ 1e-20)
+        pn_b3[i] = np.log10(pn["band_30000_80000"]+ 1e-20)
 
-        ''' %% 取包络特征 '''
-        y_envelope_HT = np.abs(y)  # IQ 包络
-        y_envelope_mean[i] = np.mean(y_envelope_HT)
-        y_envelope_use = y_envelope_HT
+        ''' %% 取包络特征 RJ特征 '''
+        y_envelope_use = np.abs(y)
+        y_envelope_mean[i] = np.mean(y_envelope_use)
 
-        ''' %% RJ特征 '''
+        m2_y_envelope = np.mean(y_envelope_use ** 2)
+        m4_y_envelope = np.mean(y_envelope_use ** 4)
 
-        # % 初始化RJ特征数组
-        y_envelope = np.zeros(len(y_envelope_use))
-        # % 计算包络的二阶矩
-        m2_y_envelope = np.sum(np.abs(y_envelope_use) ** 2) / len(y_envelope_use)  # 二阶矩
-        # % 计算包络的四阶矩
-        for m in range(len(y_envelope_use)):
-            y_envelope[m] = y_envelope_use[m] ** 4
-        # % 计算包络的四阶矩
-        m4_y_envelope = np.sum(y_envelope) / len(y_envelope_use)  # 四阶矩
+        den_rj = max(m2_y_envelope ** 2, eps)
 
-        # % 计算R特征
-        R_HT[i] = abs((m4_y_envelope - m2_y_envelope ** 2) / m2_y_envelope ** 2)  # R特征
-        # % 计算J特征
-        J_HT[i] = abs((m4_y_envelope - 2 * m2_y_envelope ** 2))
+        R_HT[i] = abs((m4_y_envelope - m2_y_envelope ** 2) / den_rj)
+        J_HT[i] = abs(m4_y_envelope - 2 * m2_y_envelope ** 2)
 
         ''' %% 盒维数 '''
 
@@ -311,22 +313,23 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
             sum_Db[m] = (
                                 max(y_envelope_use[m], y_envelope_use[m + 1]) * d
                                 - min(y_envelope_use[m], y_envelope_use[m + 1]) * d
-                        ) / d ** 2
+                        ) / (d ** 2)
         N_d = len(y_envelope_use) + np.sum(sum_Db)  # % 计算盒维数总和
-        Db[i] = -np.log(N_d) / np.log(d)  # % 计算盒维数
+        N_d = max(N_d,eps)
+        Db[i] = -np.log(N_d) / np.log(max(d,eps))  # % 计算盒维数
 
         ''' %% 信息维数 '''
 
-        # % 初始化信息维数数组
-        y0 = np.zeros(len(y_envelope_use) - 1)
         # % 计算包络差分
         y_0 = np.abs(np.diff(y_envelope_use))
-        # % 归一化差分值
-        p_0 = y_0 / np.sum(y_0)
-        # % 计算信息熵
-        di = p_0 * (np.log10(p_0))
-        # % 计算信息维数
-        Di[i] = -np.sum(di)  # 信息维数
+        sum_y0 = np.sum(y_0)
+        if sum_y0 < eps:
+            Di[i] = 0.0
+        else:
+            p_0 = y_0 / sum_y0
+            p_0 = np.maximum(p_0, eps)
+            di = p_0 * np.log10(p_0)
+            Di[i] = -np.sum(di)
 
         ''' %%  LZC复杂度 '''
 
@@ -335,30 +338,31 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
         # % 计算差分
         y_c = np.abs(np.diff(y_a))
 
-        if len(y_c) < 2 or np.mean(y_c) < 1e-12:
+        if len(y_c) < 2 or np.mean(y_c) < eps:
             LZC_y[i] = 0.0
             continue
         #  二值化阈值（更稳健：median；也可用 mean）
-        y_q = (y_c >= (np.mean(y_c))).astype(np.uint8)  # 0/1 序列
-        y_q_str = "".join(map(str, y_q.astype(int)))  # % 转换为字符串
+        else:
+            y_q = (y_c >= (np.mean(y_c))).astype(np.uint8)  # 0/1 序列
+            y_q_str = "".join(map(str, y_q.astype(int)))  # % 转换为字符串
 
-        c = 1  # % 初始化复杂度计数器
-        S = y_q_str[0]  # % 初始化字符串S
-        Q = ""  # % 初始化字符串Q
+            c = 1  # % 初始化复杂度计数器
+            S = y_q_str[0]  # % 初始化字符串S
+            Q = ""  # % 初始化字符串Q
 
-        for n in range(1, len(y_q_str)):  # % 计算LZC复杂度
-            Q += y_q_str[n]
-            SQ = S + Q
-            SQv = SQ[:-1]
-            if SQv.find(Q) == -1:
-                S = SQ
-                Q = ""
+            for n in range(1, len(y_q_str)):  # % 计算LZC复杂度
+                Q += y_q_str[n]
+                SQ = S + Q
+                SQv = SQ[:-1]
+                if SQv.find(Q) == -1:
+                    S = SQ
+                    Q = ""
+                    c += 1
+
+            if Q != "":
                 c += 1
-
-        if Q != "":
-            c += 1
-                # % 计算LZC复杂度特征值
-        LZC_y[i] = c * np.log10(len(y_q_str)) / len(y_q_str)  # LZC特征值
+                    # % 计算LZC复杂度特征值
+            LZC_y[i] = c * np.log10(len(y_q_str)) / len(y_q_str)  # LZC特征值
 
         ''' %% 信号特征 '''
         #
@@ -410,20 +414,20 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
     feature_matrix = np.column_stack(
         [
             # theta, Constellation_1, Constellation_2, Constellation_3,
-            SNRE,
-            rho,
+            # SNRE,
+            # rho,
             # psi_cos,
             # psi_sin,
             # ph,
             # pn_b1,
-            pn_b2,
-            pn_b3,
+            # pn_b2,
+            # pn_b3,
             y_envelope_mean,
             R_HT,
             J_HT,
-            Db,
-            Di,
-            LZC_y,
+            # Db,
+            # Di,
+            # LZC_y,
             # P_u, P_o, P_y, P_k, P_x,
             # P_U, P_O, P_Y, P_K, P_X,
         ]

@@ -20,7 +20,7 @@ def get_true_label(filename):
 
 
 # 主程序参数
-folder = r'D:\matrixlab\match_tar\test33TPLB_use'  # 修改为你的信号路径
+folder = r'D:\matrixlab\match_tar\test35ZL_bb1'  # 修改为你的信号路径
 Fs = 1e7  #采样率
 save_path = "test8w5.npz"  # 保存标准化特征文件名
 
@@ -38,8 +38,8 @@ else:
         if file.endswith('.mat'):
             path = os.path.join(folder, file)
             data = scipy.io.loadmat(path)
-            if 'x_use' in data:
-                signal = data['x_use']
+            if 'x_bb1' in data:
+                signal = data['x_bb1']
                 if signal.ndim > 1:
                     signal = signal.flatten()
                 # signal_list.append(signal)
