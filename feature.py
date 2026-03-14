@@ -197,6 +197,10 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
     SNRE = np.zeros(number_of_data, dtype=complex)
     #IQ  不圆度
     rho = np.zeros(number_of_data)
+    c20_re_n = np.zeros(number_of_data)
+    c20_im_n = np.zeros(number_of_data)
+    dphi_std = np.zeros(number_of_data)
+    image_rej_db = np.zeros(number_of_data)
     #mean(y**2)相位
     psi_cos= np.zeros(number_of_data)
     psi_sin=np.zeros(number_of_data)
@@ -278,10 +282,49 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
         den_rho = max(den_rho, eps)
 
         rho[i] = np.abs(c20) / den_rho
+        c20_re_n[i] = np.real(c20) / den_rho
+        c20_im_n[i] = np.imag(c20) / den_rho
 
         c20_abs = max(np.abs(c20), eps)
         psi_cos[i] = np.real(c20) / c20_abs
         psi_sin[i] = np.imag(c20) / c20_abs
+
+        # ===== 新增 2：dphi_std =====
+        dphi = phase_increment_series_no_ref(
+            y,
+            amp_thr_ratio=0.08,
+            min_valid_ratio=0.20,
+            unwrap=True
+        )
+
+        if dphi.size < 8:
+            dphi_std[i] = 0.0
+        else:
+            # 去掉均值，避免把平均频偏当成波动
+            dphi_centered = dphi - np.mean(dphi)
+            dphi_std[i] = np.std(dphi_centered)
+
+        # ===== 新增 3：image_rej_db =====
+        # 估计带内镜像抑制度：正负频带能量比
+        nfft_img = int(2 ** np.ceil(np.log2(len(y))))
+        Y = np.fft.fftshift(np.fft.fft(y, n=nfft_img))
+        f = np.fft.fftshift(np.fft.fftfreq(nfft_img, d=1.0 / Fs))
+
+        # 用你的信号主带宽来截取，避免吃太多带外噪声
+        # 若你已知 BW_99_max≈83kHz，可先写死；后续也可改成参数
+        bw_use = 8.0e4
+
+        pos_mask = (f > 0) & (f < bw_use)
+        neg_mask = (f < 0) & (f > -bw_use)
+
+        P_pos = np.sum(np.abs(Y[pos_mask]) ** 2)
+        P_neg = np.sum(np.abs(Y[neg_mask]) ** 2)
+
+        P_pos = max(P_pos, eps)
+        P_neg = max(P_neg, eps)
+
+        # 镜像抑制度，越大通常说明镜像越小
+        image_rej_db[i] = 10.0 * np.log10(P_pos / P_neg)
 
 
         ''' %% 相位噪声 '''
@@ -364,6 +407,7 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
                     # % 计算LZC复杂度特征值
             LZC_y[i] = c * np.log10(len(y_q_str)) / len(y_q_str)  # LZC特征值
 
+
         ''' %% 信号特征 '''
         #
         # Y = y_1_1 - y  # % 计算信号差分
@@ -413,11 +457,14 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
     # % 汇总所有特征值
     feature_matrix = np.column_stack(
         [
-            # theta, Constellation_1, Constellation_2, Constellation_3,
-            # SNRE,
-            # rho,
+            SNRE,
             # psi_cos,
             # psi_sin,
+            # rho,
+            # c20_re_n,
+            # c20_im_n,
+            # dphi_std,
+            # image_rej_db,
             # ph,
             # pn_b1,
             # pn_b2,

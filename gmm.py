@@ -29,6 +29,7 @@ import re
 def parse_filename(filename: str):
     base = os.path.splitext(filename)[0]
     parts = base.split('_')
+
     # 期望至少:
     # ['signal3', '1', '3', '23001.000000', '31000.000000', '3000000.000000']
     if len(parts) < 3:
@@ -58,6 +59,53 @@ def align_cluster_labels(y_true, y_pred):
     mapping = {col: row for row, col in zip(row_ind, col_ind)}
     return np.array([mapping[label] for label in y_pred])
 
+# =========================
+# GMM + 同时刻互斥约束
+# 对每个 hop_time：
+#   cost(i,k) = -log p(class=k | x_i)
+# 然后做匈牙利算法分配
+# =========================
+def constrained_assign_by_hop_time_gmm(X_scaled, file_list, gmm, num_classes, eps=1e-12):
+    hop_times = np.array([get_hop_time(f) for f in file_list])
+
+    # GMM 后验概率：shape = (N_samples, num_classes)
+    prob = gmm.predict_proba(X_scaled)
+    prob = np.clip(prob, eps, 1.0)
+
+    constrained_labels = -np.ones(len(file_list), dtype=int)
+
+    for hop in np.unique(hop_times):
+        idx = np.where(hop_times == hop)[0]
+
+        # 该时刻内的样本 × 类别 的代价矩阵
+        # 概率越大，代价越小
+        cost = -np.log(prob[idx])
+
+        n_group = len(idx)
+
+        if n_group <= num_classes:
+            row_ind, col_ind = linear_sum_assignment(cost)
+            for r, c in zip(row_ind, col_ind):
+                constrained_labels[idx[r]] = c
+        else:
+            # 如果该时刻样本数 > 类别数，无法完全满足互斥
+            # 先做唯一分配，剩余样本退化为最大概率类别
+            row_ind, col_ind = linear_sum_assignment(cost[:, :num_classes])
+
+            assigned_rows = set(row_ind.tolist())
+            for r, c in zip(row_ind, col_ind):
+                constrained_labels[idx[r]] = c
+
+            for local_r in range(n_group):
+                if local_r not in assigned_rows:
+                    constrained_labels[idx[local_r]] = np.argmax(prob[idx[local_r]])
+
+    # 理论上不应发生，保险起见
+    unassigned = np.where(constrained_labels < 0)[0]
+    if len(unassigned) > 0:
+        constrained_labels[unassigned] = np.argmax(prob[unassigned], axis=1)
+
+    return constrained_labels
 # =========================
 # 加入“同一时刻不能分到同一类”的约束
 # 思路：
@@ -110,12 +158,18 @@ def constrained_assign_by_hop_time(X_scaled, file_list, kmeans, num_classes):
 
     return constrained_labels
 
+# def get_true_label(filename):
+#     m = re.search(r'_(\d+)', filename)
+#     if m is None:
+#         raise ValueError(f"无法解析标签: {filename}")
+#     return int(m.group(1))
+
 # 主程序参数
 # =========================
 # 读取 / 提取特征
 # =========================
 
-folder = r'D:\matrixlab\match_tar\test36BP_snr20_bb1'  # 修改为你的信号路径
+folder = r'D:\matrixlab\match_tar\test35BP_snr10_bb1'  # 修改为你的信号路径
 Fs = 1e7  #采样率
 save_path = "test8w5.npz"  # 保存标准化特征文件名
 
@@ -165,22 +219,37 @@ for i in range(len(file_list)):
 y_true = np.array([get_true_label(fname) - 1 for fname in file_list],dtype=int)
 num_classes = len(np.unique(y_true))
 
-# KMeans 五类聚类
-kmeans = KMeans(n_clusters=num_classes, random_state=3, n_init=20)
-labels_kmeans = kmeans.fit_predict(X_scaled)
-ari_raw= adjusted_rand_score(y_true, labels_kmeans)
-print("原始 Kmeans ARI =", ari_raw)
 # =========================
-# 再加“同一时刻互斥”约束
+# 原始 GMM
+# covariance_type 可试：
+# 'full' / 'diag'
+# 先推荐 full
 # =========================
-labels_constrained = constrained_assign_by_hop_time(
+gmm = GaussianMixture(
+    n_components=num_classes,
+    covariance_type='full',
+    random_state=3,
+    n_init=10
+)
+
+gmm.fit(X_scaled)
+labels_gmm = gmm.predict(X_scaled)
+ari_raw = adjusted_rand_score(y_true, labels_gmm)
+print("原始 GMM ARI =", ari_raw)
+
+# =========================
+# GMM + 同时刻互斥约束
+# =========================
+labels_constrained = constrained_assign_by_hop_time_gmm(
     X_scaled=X_scaled,
     file_list=file_list,
-    kmeans=kmeans,
+    gmm=gmm,
     num_classes=num_classes
 )
+
 ari_constrained = adjusted_rand_score(y_true, labels_constrained)
-print("加入同一时刻互斥约束后的 ARI =", ari_constrained)
+print("GMM + 同时刻互斥约束 ARI =", ari_constrained)
+
 
 
 labels_aligned = align_cluster_labels(y_true, labels_constrained)
@@ -224,7 +293,8 @@ sns.heatmap(
 )
 plt.xlabel("Predicted Label")
 plt.ylabel("True Label")
-plt.title("KMeans Confusion Matrix (5 Classes)")
+# plt.title("KMeans Confusion Matrix (5 Classes)")
+plt.title("GMM +  Confusion Matrix (5 Classes)")
 plt.tight_layout()
 plt.show()
 
@@ -235,51 +305,3 @@ print(classification_report(
     target_names=[f"Class {i}" for i in range(num_classes)]
 ))
 
-
-# # KMeans聚类
-# kmeans = KMeans(n_clusters=5, random_state=3)
-# labels = kmeans.fit_predict(X_scaled)
-#
-# # 输出聚类结果
-# print("文件名 → 聚类类别")
-# for fname, label in zip(file_list, labels):
-#     print(f"{fname} → 类别 {label}")
-#
-# # 构造真实标签
-# y_true = [get_true_label(fname)-1 for fname in file_list]
-# acc1 = accuracy_score(y_true, labels)
-# acc2 = accuracy_score(y_true, 1 - labels)
-# if acc2 > acc1:
-#     labels = 1 - labels  # 标签对齐
-#
-# # 根据真实标签绘制散点图
-# pca = PCA(n_components=2)
-# X_pca = pca.fit_transform(X_scaled)
-# plt.figure(figsize=(8,6))
-# palette = sns.color_palette("bright", 2)
-#
-# for label in np.unique(y_true):
-#     idx = np.array(y_true) == label
-#     plt.scatter(X_pca[idx, 0], X_pca[idx, 1],
-#                 label=f'True Class {label}', alpha=0.7, s=50, c=[palette[label]])
-#
-# plt.xlabel("PCA Component 1")
-# plt.ylabel("PCA Component 2")
-# plt.title(" PCA ")
-# plt.legend()
-# plt.grid(True)
-# plt.show()
-#
-#
-# # 混淆矩阵
-# cm = confusion_matrix(y_true, labels)
-# plt.figure(figsize=(6, 5))
-# sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
-# plt.xlabel("Predicted Label")
-# plt.ylabel("True Label")
-# plt.title("KMeans Confusion Matrix")
-# plt.tight_layout()
-# plt.show()
-#
-# # 分类报告
-# print(classification_report(y_true, labels, target_names=["Class 0", "Class 1"]))
