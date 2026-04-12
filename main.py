@@ -115,7 +115,7 @@ def constrained_assign_by_hop_time(X_scaled, file_list, kmeans, num_classes):
 # 读取 / 提取特征
 # =========================
 
-folder = r'D:\matrixlab\match_tar\test36BP_snr20_bb1'  # 修改为你的信号路径
+folder = r'D:\matrixlab\match_tar\test37rNBP_snr0_bb1'  # 修改为你的信号路径
 Fs = 1e7  #采样率
 save_path = "test8w5.npz"  # 保存标准化特征文件名
 
@@ -139,7 +139,7 @@ else:
                     signal = signal.flatten()
                 # signal_list.append(signal)
                 file_list.append(file)
-                feature_vector = ex_feature(signal[np.newaxis, :], Fs)[0]
+                feature_vector = ex_feature(signal[np.newaxis, :],Fs)[0]
                 features_list.append(feature_vector)
     # original_signal_matrix = np.vstack(signal_list)
     # feature_matrix=ex_feature(original_signal_matrix, Fs)

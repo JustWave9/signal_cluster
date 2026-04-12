@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.fftpack import fft, ifft, fftshift
-from scipy.signal import hilbert, firwin, lfilter, boxcar, welch, detrend
+from scipy.signal import hilbert, firwin, lfilter, welch, detrend
+from scipy.signal.windows import boxcar
 from typing import Optional, Tuple, Dict
 from tqdm import tqdm
 from sklearn.preprocessing import normalize
@@ -136,7 +137,7 @@ def phase_noise_features_no_ref(
         amp_thr_ratio: float = 0.08,
         detrend_linear: bool = False,
         # len_=10000 => 1 ms => Δf ~ 1kHz，故建议使用 kHz~MHz 频段
-        bands_hz: Tuple[Tuple[float, float], ...] = ((2e3, 3e4), (2e3, 1e4), (1e4, 3e4), (3e4, 8e4)),
+        bands_hz: Tuple[Tuple[float, float], ...] = ((2e3, 5e4), (2e3, 1e4), (1e4, 3e4), (5e4, 8e4)),
         return_spectrum: bool = False,
 ) -> Dict[str, float]:
     """
@@ -194,7 +195,8 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
 
     ''' 注意虚部保留问题 '''
     # 信噪比
-    SNRE = np.zeros(number_of_data, dtype=complex)
+    # SNRE = np.zeros(number_of_data, dtype=complex)
+    SNRE = np.zeros(number_of_data)
     #IQ  不圆度
     rho = np.zeros(number_of_data)
     c20_re_n = np.zeros(number_of_data)
@@ -205,7 +207,8 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
     psi_cos= np.zeros(number_of_data)
     psi_sin=np.zeros(number_of_data)
     # 相位噪声
-    ph = np.zeros(number_of_data, dtype=complex)
+    # ph = np.zeros(number_of_data, dtype=complex)
+    ph = np.zeros(number_of_data)
     pn_b1 = np.zeros(number_of_data)  # 5k~50k
     pn_b2 = np.zeros(number_of_data)  # 50k~500k
     pn_b3 = np.zeros(number_of_data)  # 500k~2M
@@ -257,7 +260,7 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
     for i in tqdm(range(number_of_data), desc="当前矩阵提取进度"):  # % 遍历每个数据样本
 
         y = raw_data[:, i]  # % 获取第i个样本的时域数据
-        # P_USE = Signal_fre[i, :]  # % 获取对应的频域信号
+        P_USE = Signal_fre[i, :]  # % 获取对应的频域信号
 
         ''' %% 信噪比 '''
         q = np.mean(np.abs(y) ** 2)     #  二阶矩
@@ -330,10 +333,10 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
         ''' %% 相位噪声 '''
         pn = phase_noise_features_no_ref(y, Fs)
         # 你原来 ph[i] 是一个标量：建议先用 total_band 替代
-        ph[i] = np.log10(pn["band_2000_30000"]+ 1e-20)
-        pn_b1[i] = np.log10(pn["band_2000_10000"]+ 1e-20)
-        pn_b2[i] = np.log10(pn["band_10000_30000"]+ 1e-20)
-        pn_b3[i] = np.log10(pn["band_30000_80000"]+ 1e-20)
+        ph[i] = np.log10(pn["band_2000_50000"]+ 1e-20)
+        # pn_b1[i] = np.log10(pn["band_2000_10000"]+ 1e-20)
+        # pn_b2[i] = np.log10(pn["band_10000_30000"]+ 1e-20)
+        pn_b3[i] = np.log10(pn["band_50000_80000"]+ 1e-20)
 
         ''' %% 取包络特征 RJ特征 '''
         y_envelope_use = np.abs(y)
@@ -383,7 +386,7 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
 
         if len(y_c) < 2 or np.mean(y_c) < eps:
             LZC_y[i] = 0.0
-            continue
+
         #  二值化阈值（更稳健：median；也可用 mean）
         else:
             y_q = (y_c >= (np.mean(y_c))).astype(np.uint8)  # 0/1 序列
@@ -409,6 +412,46 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
 
 
         ''' %% 信号特征 '''
+
+        a = np.abs(y)  # 建议对复信号取幅度后再统计，更稳
+        a_mean = np.mean(a)
+        a_center = a - a_mean
+        a_var = np.mean(a_center ** 2)
+
+        # P_u[i] = a_mean  # 信号均值
+        P_o[i] = a_var  # 信号方差
+
+        if a_var < eps:
+            P_y[i] = 0.0  # 信号偏度
+            P_k[i] = 0.0  # 信号峰度
+        else:
+            P_y[i] = np.mean(a_center ** 3) / (a_var ** 1.5 + eps)
+            P_k[i] = np.mean(a_center ** 4) / (a_var ** 2 + eps)
+
+        a_x1 = a[: len(a) // 2]  # 前半部分信号
+        a_x2 = a[len(a) // 2:]  # 后半部分信号
+        P_x[i] = (np.mean(a_x1) + eps) / (np.mean(a_x2) + eps)  # 前后半部分信号比率
+
+        ''' %% 功率谱特征（直接对原始频谱功率统计） '''
+        S_use = np.abs(P_USE) ** 2  # 功率谱
+        S_mean = np.mean(S_use)
+        S_center = S_use - S_mean
+        S_var = np.mean(S_center ** 2)
+
+        P_U[i] = np.sum(S_use)  # 总功率
+        # P_O[i] = S_mean  # 功率均值
+        P_O[i] = S_var  # 功率方差
+
+        if S_var < eps:
+            P_Y[i] = 0.0  # 功率偏度
+            P_K[i] = 0.0  # 功率峰度（这里先占位，下面重算）
+        else:
+            P_Y[i] = np.mean(S_center ** 3) / (S_var ** 1.5 + eps)  # 功率偏度
+            P_K[i] = np.mean(S_center ** 4) / (S_var ** 2 + eps)  # 功率峰度
+
+        S_x1 = S_use[: len(S_use) // 2]  # 前半部分功率谱
+        S_x2 = S_use[len(S_use) // 2:]  # 后半部分功率谱
+        P_X[i] = (np.mean(S_x1) + eps) / (np.mean(S_x2) + eps)  # 前后半部分功率谱比率
         #
         # Y = y_1_1 - y  # % 计算信号差分
         # P_u[i] = np.sum(abs(Y)) / len(Y)  # % 计算均值
@@ -457,30 +500,46 @@ def ex_feature(original_signal_matrix, Fs, task_index_Fea_Ext_Cal=None, queue_Fe
     # % 汇总所有特征值
     feature_matrix = np.column_stack(
         [
-            SNRE,
+
             # psi_cos,
             # psi_sin,
-            # rho,
-            # c20_re_n,
-            # c20_im_n,
-            # dphi_std,
+            rho,
+            c20_re_n,
+            c20_im_n,
+            dphi_std,
             # image_rej_db,
-            # ph,
+            ph,
             # pn_b1,
             # pn_b2,
-            # pn_b3,
+            pn_b3,
             y_envelope_mean,
+            P_o, P_y, P_k, P_x,
             R_HT,
             J_HT,
-            # Db,
-            # Di,
-            # LZC_y,
-            # P_u, P_o, P_y, P_k, P_x,
-            # P_U, P_O, P_Y, P_K, P_X,
+            SNRE,
+            Db,
+            Di,
+            LZC_y,
+            P_U,
+            P_O, P_Y, P_K, P_X,
         ]
     )
+    # feature_matrix = np.column_stack(
+    #     [
+    #         y_envelope_mean,
+    #         # R_HT,
+    #         J_HT,
+    #         # SNRE,
+    #         Db,
+    #         # Di,
+    #         # LZC_y,
+    #         P_U,
+    #         # P_O, P_Y, P_K, P_X,
+    #     ]
+    # )
     # % 取特征值的绝对值
-    Feature = np.abs(feature_matrix)
+    # Feature = np.abs(feature_matrix)
+    Feature = feature_matrix
     # # % 可选的特征归一化
     # Feature = normalize(Feature, axis=1)
 

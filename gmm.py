@@ -169,7 +169,7 @@ def constrained_assign_by_hop_time(X_scaled, file_list, kmeans, num_classes):
 # 读取 / 提取特征
 # =========================
 
-folder = r'D:\matrixlab\match_tar\test35BP_snr10_bb1'  # 修改为你的信号路径
+folder = r'D:\matrixlab\match_tar\test37rNBP_snr10_bb1'  # 修改为你的信号路径
 Fs = 1e7  #采样率
 save_path = "test8w5.npz"  # 保存标准化特征文件名
 
